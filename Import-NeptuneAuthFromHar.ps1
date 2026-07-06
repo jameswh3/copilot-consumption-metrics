@@ -49,7 +49,14 @@ function Set-DotEnvValue {
     Set-Content -Path $Path -Value $content
 }
 
-$har = Get-Content -Path $HarPath -Raw | ConvertFrom-Json -Depth 100
+$harJsonRaw = Get-Content -Path $HarPath -Raw
+$convertFromJson = Get-Command ConvertFrom-Json -ErrorAction Stop
+if ($convertFromJson.Parameters.ContainsKey('Depth')) {
+    $har = $harJsonRaw | ConvertFrom-Json -Depth 100
+}
+else {
+    $har = $harJsonRaw | ConvertFrom-Json
+}
 $entries = @($har.log.entries)
 if ($entries.Count -eq 0) {
     throw 'The HAR has no entries.'
