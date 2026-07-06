@@ -6,7 +6,7 @@ https://admin.cloud.microsoft/admin/api/neptunelicensing/creditrequests
 
 ## Files
 
-- `Get-NeptuneCreditRequestsBearer.ps1`: Single entrypoint that uses a supplied bearer token and pages through results
+- `Get-NeptuneCreditRequestsBearer.ps1`: Single entrypoint that uses authenticated request headers and pages through results
 - `Shared/Import-DotEnv.ps1`: Loads `.env` values into process env vars
 - `.env.example`: Starter template for local configuration
 - `.env`: Local config (gitignored)
@@ -19,23 +19,32 @@ https://admin.cloud.microsoft/admin/api/neptunelicensing/creditrequests
 Copy-Item .\.env.example .\.env
 ```
 
-2. Put a bearer token from the authenticated admin portal request in `.env` as `NEPTUNE_ACCESS_TOKEN`.
+2. Open this page while signed in:
 
-3. Run the script:
+   `https://admin.cloud.microsoft/?source=applauncher#/copilot/cowork`
+
+3. In browser DevTools Network, select the request to:
+
+   `https://admin.cloud.microsoft/admin/api/neptunelicensing/creditrequests...`
+
+4. Copy the full `Cookie` header value from that request into `.env` as `NEPTUNE_COOKIE_HEADER`.
+
+5. Run the script:
 
 ```powershell
 .\Get-NeptuneCreditRequestsBearer.ps1 -MaxPages 200
 ```
 
-If you want to pass the token directly instead of using `.env`:
+If you want to pass cookie auth directly:
 
 ```powershell
-.\Get-NeptuneCreditRequestsBearer.ps1 -AccessToken "<bearer token>" -MaxPages 200
+.\Get-NeptuneCreditRequestsBearer.ps1 -CookieHeader "<cookie header value>" -MaxPages 200
 ```
 
 ## Behavior
 
-- Sends only `Authorization: Bearer ...`
+- Sends `Cookie: ...` when `-CookieHeader`/`NEPTUNE_COOKIE_HEADER` is supplied
+- Can also send `Authorization: Bearer ...` when `-AccessToken` is supplied directly
 - Requests `top=<PageSize>`
 - Follows `continuationToken` until empty or `MaxPages` is reached
 - Stops if a continuation token repeats
@@ -54,7 +63,7 @@ If you want to pass the token directly instead of using `.env`:
 
 ## .env Keys
 
-- `NEPTUNE_ACCESS_TOKEN`
+- `NEPTUNE_COOKIE_HEADER`
 - `NEPTUNE_CREDITREQUESTS_BASE_URI`
 - `NEPTUNE_CREDITREQUESTS_SERVICE`
 - `NEPTUNE_CREDITREQUESTS_STATES`
@@ -65,5 +74,5 @@ If you want to pass the token directly instead of using `.env`:
 ## Notes
 
 - The script does not attempt Azure CLI or MSAL token acquisition.
-- The bearer token must come from a successful authenticated admin portal request.
+- Preferred auth is cookie header captured from a successful authenticated admin portal creditrequests request.
 - `.env` is local only and should not be committed.

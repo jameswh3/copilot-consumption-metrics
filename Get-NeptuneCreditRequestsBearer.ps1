@@ -14,6 +14,8 @@ param(
 
     [string]$AccessToken,
 
+    [string]$CookieHeader,
+
     [string]$OutputPath
 )
 
@@ -31,6 +33,10 @@ if ((Test-Path -Path $importDotEnvPath) -and (Test-Path -Path $dotEnvPath)) {
 
 if (-not $PSBoundParameters.ContainsKey('AccessToken') -and -not [string]::IsNullOrWhiteSpace($env:NEPTUNE_ACCESS_TOKEN)) {
     $script:AccessToken = $env:NEPTUNE_ACCESS_TOKEN
+}
+
+if (-not $PSBoundParameters.ContainsKey('CookieHeader') -and -not [string]::IsNullOrWhiteSpace($env:NEPTUNE_COOKIE_HEADER)) {
+    $script:CookieHeader = $env:NEPTUNE_COOKIE_HEADER
 }
 
 function ConvertFrom-JsonCompat {
@@ -72,10 +78,18 @@ function ConvertFrom-JwtPayload {
 
 function Resolve-AccessToken {
     if ([string]::IsNullOrWhiteSpace($AccessToken)) {
-        throw 'No bearer token was provided. Set NEPTUNE_ACCESS_TOKEN in .env or pass -AccessToken directly.'
+        return $null
     }
 
     return $AccessToken
+}
+
+function Resolve-CookieHeader {
+    if ([string]::IsNullOrWhiteSpace($CookieHeader)) {
+        return $null
+    }
+
+    return $CookieHeader
 }
 
 function New-NeptuneUri {
@@ -160,11 +174,11 @@ function Invoke-NeptuneRequest {
         [string]$Uri,
 
         [Parameter(Mandatory = $true)]
-        [string]$BearerToken
+        [hashtable]$Headers
     )
 
     try {
-        $response = Invoke-WebRequest -Uri $Uri -Headers @{ Authorization = "Bearer $BearerToken" } -Method Get -MaximumRedirection 0
+        $response = Invoke-WebRequest -Uri $Uri -Headers $Headers -Method Get -MaximumRedirection 0
     }
     catch {
         $details = Get-HttpErrorDetails -ErrorRecord $_
@@ -192,9 +206,22 @@ if ($MaxPages -le 0) {
     throw 'MaxPages must be greater than 0.'
 }
 
+$requestHeaders = @{}
 $bearerToken = Resolve-AccessToken
-$claims = ConvertFrom-JwtPayload -Token $bearerToken
-Write-Host ("Using bearer token | aud={0} | tid={1}" -f $claims.aud, $claims.tid)
+$cookieHeaderValue = Resolve-CookieHeader
+
+if (-not [string]::IsNullOrWhiteSpace($bearerToken)) {
+    $requestHeaders.Authorization = "Bearer $bearerToken"
+    $claims = ConvertFrom-JwtPayload -Token $bearerToken
+    Write-Host ("Using bearer token | aud={0} | tid={1}" -f $claims.aud, $claims.tid)
+}
+elseif (-not [string]::IsNullOrWhiteSpace($cookieHeaderValue)) {
+    $requestHeaders.Cookie = $cookieHeaderValue
+    Write-Host 'Using cookie header auth.'
+}
+else {
+    throw 'No auth was provided. Set NEPTUNE_ACCESS_TOKEN or NEPTUNE_COOKIE_HEADER in .env, or pass -AccessToken / -CookieHeader directly.'
+}
 
 $allItems = [System.Collections.Generic.List[object]]::new()
 $page = 0
@@ -222,7 +249,7 @@ while ($page -lt $MaxPages) {
     }
 
     $uri = New-NeptuneUri -Parameters $queryParams
-    $json = Invoke-NeptuneRequest -Uri $uri -BearerToken $bearerToken
+    $json = Invoke-NeptuneRequest -Uri $uri -Headers $requestHeaders
 
     $items = @()
     if ($json -and ($json.PSObject.Properties.Name -contains 'value')) {
