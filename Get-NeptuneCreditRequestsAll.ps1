@@ -375,11 +375,115 @@ function Resolve-AuthHeaders {
 
     $extraHeaders = Get-ExtraHeadersHashtable -JsonText $ExtraHeadersJson
 
-    if ($baseHeaders.Count -eq 0 -and $extraHeaders.Count -eq 0) {
-        throw 'No usable auth material was found. Provide AccessToken, CookieHeader, RootAuthToken, ExtraHeadersJson, or set UseGraphAuth.'
+    if ($baseHeaders.Count -eq 0) {
+        throw 'No usable auth material was found. Provide AccessToken, CookieHeader, RootAuthToken, or set UseGraphAuth. Extra headers alone are not sufficient auth.'
     }
 
     return Merge-Headers -Primary $baseHeaders -Secondary $extraHeaders
+}
+
+function Get-HttpErrorDetails {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Management.Automation.ErrorRecord]$ErrorRecord
+    )
+
+    $statusCode = $null
+    $body = $null
+
+    $exception = $ErrorRecord.Exception
+    if ($exception -and ($exception.PSObject.Properties.Name -contains 'Response') -and $exception.Response) {
+        $response = $exception.Response
+
+        if ($response.PSObject.Properties.Name -contains 'StatusCode') {
+            try {
+                $statusCode = [int]$response.StatusCode
+            }
+            catch {
+                $statusCode = $null
+            }
+        }
+
+        try {
+            if (($response.PSObject.Properties.Name -contains 'Content') -and $response.Content) {
+                if ($response.Content.PSObject.Methods.Name -contains 'ReadAsStringAsync') {
+                    $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+                }
+                else {
+                    $body = [string]$response.Content
+                }
+            }
+            elseif ($response.PSObject.Methods.Name -contains 'GetResponseStream') {
+                $stream = $response.GetResponseStream()
+                if ($stream) {
+                    $reader = New-Object System.IO.StreamReader($stream)
+                    $body = $reader.ReadToEnd()
+                    $reader.Dispose()
+                    $stream.Dispose()
+                }
+            }
+        }
+        catch {
+            # Best-effort diagnostics only.
+        }
+    }
+
+    if (-not $statusCode -and $exception -and $exception.Message -match '\b(\d{3})\b') {
+        $statusCode = [int]$matches[1]
+    }
+
+    [pscustomobject]@{
+        StatusCode = $statusCode
+        Body       = $body
+    }
+}
+
+function Get-AuthOnlyHeaders {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Headers
+    )
+
+    $authHeaders = @{}
+    foreach ($key in $Headers.Keys) {
+        if ($key -ieq 'Authorization' -or $key -ieq 'Cookie') {
+            $authHeaders[$key] = $Headers[$key]
+        }
+    }
+
+    return $authHeaders
+}
+
+function Invoke-NeptuneRequestWithFallback {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Uri,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Headers
+    )
+
+    try {
+        return Invoke-NeptuneRequest -Uri $Uri -Headers $Headers
+    }
+    catch {
+        $details = Get-HttpErrorDetails -ErrorRecord $_
+
+        $authOnlyHeaders = Get-AuthOnlyHeaders -Headers $Headers
+        $hasReplayHeaders = $Headers.Count -gt $authOnlyHeaders.Count
+
+        if ($details.StatusCode -eq 400 -and $hasReplayHeaders -and $authOnlyHeaders.Count -gt 0) {
+            Write-Warning 'Received HTTP 400 with replay headers; retrying once with auth-only headers.'
+            return Invoke-NeptuneRequest -Uri $Uri -Headers $authOnlyHeaders
+        }
+
+        $bodyPreview = if ([string]::IsNullOrWhiteSpace($details.Body)) { '' } else { $details.Body.Substring(0, [Math]::Min(800, $details.Body.Length)) }
+        if ($details.StatusCode) {
+            throw "Neptune request failed with HTTP $($details.StatusCode). Uri: $Uri. Body: $bodyPreview"
+        }
+
+        throw
+    }
 }
 
 function Invoke-NeptuneRequest {
@@ -440,7 +544,7 @@ while ($page -lt $MaxPages) {
     }
 
     $uri = New-NeptuneUri -Parameters $queryParams
-    $result = Invoke-NeptuneRequest -Uri $uri -Headers $headers
+    $result = Invoke-NeptuneRequestWithFallback -Uri $uri -Headers $headers
 
     $items = @()
     if ($result.Json -and ($result.Json.PSObject.Properties.Name -contains 'value')) {
