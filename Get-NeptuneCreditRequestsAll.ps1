@@ -20,6 +20,10 @@ param(
 
     [string]$CookieHeader,
 
+    [string]$ExtraHeadersJson,
+
+    [string]$HarPath,
+
     [switch]$UseGraphAuth,
 
     [switch]$AllowMsal,
@@ -115,6 +119,10 @@ if (-not $PSBoundParameters.ContainsKey('CookieHeader') -and -not [string]::IsNu
     $script:CookieHeader = $env:NEPTUNE_COOKIE_HEADER
 }
 
+if (-not $PSBoundParameters.ContainsKey('ExtraHeadersJson') -and -not [string]::IsNullOrWhiteSpace($env:NEPTUNE_EXTRA_HEADERS_JSON)) {
+    $script:ExtraHeadersJson = $env:NEPTUNE_EXTRA_HEADERS_JSON
+}
+
 if (-not $PSBoundParameters.ContainsKey('UseGraphAuth') -and -not [string]::IsNullOrWhiteSpace($env:NEPTUNE_USE_GRAPH_AUTH)) {
     $script:UseGraphAuth = [bool](ConvertTo-Boolean -Value $env:NEPTUNE_USE_GRAPH_AUTH)
 }
@@ -148,29 +156,230 @@ function New-NeptuneUri {
     '{0}?{1}' -f $BaseUri, ($pairs -join '&')
 }
 
-function Resolve-AuthHeaders {
-    if ($AccessToken) {
-        return @{ Authorization = "Bearer $AccessToken" }
+function ConvertFrom-JsonCompat {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$JsonText,
+
+        [int]$Depth = 20
+    )
+
+    $convertFromJson = Get-Command ConvertFrom-Json -ErrorAction Stop
+    if ($convertFromJson.Parameters.ContainsKey('Depth')) {
+        return $JsonText | ConvertFrom-Json -Depth $Depth
     }
 
-    if ($UseGraphAuth) {
-        $graphToken = & (Join-Path $PSScriptRoot 'Get-AdminApiAccessToken.ps1') -Resource 'https://graph.microsoft.com' -TenantId $TenantId -AllowMsal:$true -Quiet
-        if ($graphToken -and $graphToken.AccessToken) {
-            return @{ Authorization = "Bearer $($graphToken.AccessToken)" }
+    return $JsonText | ConvertFrom-Json
+}
+
+function Get-HarAuthMaterial {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if (-not (Test-Path -Path $Path)) {
+        throw "HAR file not found: $Path"
+    }
+
+    $harJsonRaw = Get-Content -Path $Path -Raw
+    $har = ConvertFrom-JsonCompat -JsonText $harJsonRaw -Depth 100
+    $entries = @($har.log.entries)
+    if ($entries.Count -eq 0) {
+        throw 'The HAR has no entries.'
+    }
+
+    $matchingEntries = $entries | Where-Object {
+        $_.request.url -match 'admin\.cloud\.microsoft/admin/api/neptunelicensing/creditrequests'
+    }
+
+    if (@($matchingEntries).Count -eq 0) {
+        throw 'No neptunelicensing/creditrequests request was found in the HAR.'
+    }
+
+    $entry = $matchingEntries | Select-Object -Last 1
+    $headers = @($entry.request.headers)
+
+    $cookieHeader = $null
+    $authToken = $null
+    $extraHeaders = @{}
+
+    foreach ($header in $headers) {
+        $name = if ($header -and ($header.PSObject.Properties.Name -contains 'name')) { [string]$header.name } else { $null }
+        $value = if ($header -and ($header.PSObject.Properties.Name -contains 'value')) { [string]$header.value } else { $null }
+
+        if ([string]::IsNullOrWhiteSpace($name) -or [string]::IsNullOrWhiteSpace($value)) {
+            continue
         }
 
-        throw 'Graph auth mode did not yield a token. Run Connect-MgGraph/az login first, or disable UseGraphAuth and use cookie/HAR auth.'
+        if ($name -ieq 'Cookie') {
+            $cookieHeader = $value
+            continue
+        }
+
+        if ($name -ieq 'Authorization') {
+            $authMatch = [regex]::Match($value, '^Bearer\s+(.+)$')
+            if ($authMatch.Success) {
+                $authToken = $authMatch.Groups[1].Value
+            }
+            continue
+        }
+
+        if ($name.StartsWith(':')) {
+            continue
+        }
+
+        $extraHeaders[$name] = $value
     }
 
-    if ($CookieHeader) {
-        return @{ Cookie = $CookieHeader }
+    return [pscustomobject]@{
+        CookieHeader      = $cookieHeader
+        AccessToken       = $authToken
+        ExtraHeadersJson  = if ($extraHeaders.Count -gt 0) { $extraHeaders | ConvertTo-Json -Compress -Depth 20 } else { '{}' }
+        RequestUrl        = [string]$entry.request.url
+        ExtraHeaderCount  = $extraHeaders.Count
+    }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($HarPath)) {
+    $harAuth = Get-HarAuthMaterial -Path $HarPath
+
+    if (-not $PSBoundParameters.ContainsKey('AccessToken') -and [string]::IsNullOrWhiteSpace($script:AccessToken) -and -not [string]::IsNullOrWhiteSpace($harAuth.AccessToken)) {
+        $script:AccessToken = $harAuth.AccessToken
     }
 
-    if ($RootAuthToken) {
-        return @{ Cookie = "RootAuthToken=$RootAuthToken" }
+    if (-not $PSBoundParameters.ContainsKey('CookieHeader') -and [string]::IsNullOrWhiteSpace($script:CookieHeader) -and -not [string]::IsNullOrWhiteSpace($harAuth.CookieHeader)) {
+        $script:CookieHeader = $harAuth.CookieHeader
     }
 
-    throw 'No usable auth material was found. Provide AccessToken, CookieHeader, RootAuthToken, or set UseGraphAuth.'
+    if (-not $PSBoundParameters.ContainsKey('ExtraHeadersJson') -and [string]::IsNullOrWhiteSpace($script:ExtraHeadersJson) -and -not [string]::IsNullOrWhiteSpace($harAuth.ExtraHeadersJson)) {
+        $script:ExtraHeadersJson = $harAuth.ExtraHeadersJson
+    }
+
+    Write-Host ("Loaded auth/header material from HAR in-memory only | requestUrl={0} | extraHeaders={1}" -f $harAuth.RequestUrl, $harAuth.ExtraHeaderCount)
+}
+
+function Get-ExtraHeadersHashtable {
+    param(
+        [string]$JsonText
+    )
+
+    $headers = @{}
+    if ([string]::IsNullOrWhiteSpace($JsonText)) {
+        return $headers
+    }
+
+    $trimmed = $JsonText.Trim()
+
+    # Values loaded from .env may be wrapped in quotes and contain escaped JSON.
+    if ($trimmed.StartsWith('"') -and $trimmed.EndsWith('"') -and $trimmed.Length -ge 2) {
+        try {
+            $trimmed = ConvertFrom-JsonCompat -JsonText $trimmed -Depth 5
+        }
+        catch {
+            try {
+                # Fallback for .env-style escaping where quotes were unwrapped but backslashes remain.
+                $unescaped = $trimmed -replace '\\"', '"'
+                $trimmed = ConvertFrom-JsonCompat -JsonText $unescaped -Depth 5
+            }
+            catch {
+                # Keep original text and let the main parse path produce a warning.
+            }
+        }
+    }
+    elseif ($trimmed -match '^\{\\"') {
+        try {
+            $trimmed = $trimmed -replace '\\"', '"'
+        }
+        catch {
+            # Continue with original value if unescape fails.
+        }
+    }
+
+    if ($trimmed -eq '{}' -or $trimmed -eq '') {
+        return $headers
+    }
+
+    try {
+        $obj = ConvertFrom-JsonCompat -JsonText $trimmed -Depth 20
+        if ($obj) {
+            foreach ($prop in $obj.PSObject.Properties) {
+                if (-not [string]::IsNullOrWhiteSpace($prop.Name) -and $null -ne $prop.Value) {
+                    $headers[$prop.Name] = [string]$prop.Value
+                }
+            }
+        }
+    }
+    catch {
+        Write-Warning "Failed to parse ExtraHeadersJson. Continuing without extra headers. Error: $($_.Exception.Message)"
+    }
+
+    return $headers
+}
+
+function Merge-Headers {
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Primary,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Secondary
+    )
+
+    $merged = @{}
+    foreach ($key in $Primary.Keys) {
+        $merged[$key] = $Primary[$key]
+    }
+
+    foreach ($key in $Secondary.Keys) {
+        $alreadyExists = $false
+        foreach ($existing in $merged.Keys) {
+            if ($existing -ieq $key) {
+                $alreadyExists = $true
+                break
+            }
+        }
+
+        if (-not $alreadyExists) {
+            $merged[$key] = $Secondary[$key]
+        }
+    }
+
+    return $merged
+}
+
+function Resolve-AuthHeaders {
+    $baseHeaders = @{}
+
+    if ($AccessToken) {
+        $baseHeaders = @{ Authorization = "Bearer $AccessToken" }
+    }
+
+    elseif ($UseGraphAuth) {
+        $graphToken = & (Join-Path $PSScriptRoot 'Get-AdminApiAccessToken.ps1') -Resource 'https://graph.microsoft.com' -TenantId $TenantId -AllowMsal:$true -Quiet
+        if ($graphToken -and $graphToken.AccessToken) {
+            $baseHeaders = @{ Authorization = "Bearer $($graphToken.AccessToken)" }
+        }
+        else {
+            throw 'Graph auth mode did not yield a token. Run Connect-MgGraph/az login first, or disable UseGraphAuth and use cookie/HAR auth.'
+        }
+    }
+
+    elseif ($CookieHeader) {
+        $baseHeaders = @{ Cookie = $CookieHeader }
+    }
+
+    elseif ($RootAuthToken) {
+        $baseHeaders = @{ Cookie = "RootAuthToken=$RootAuthToken" }
+    }
+
+    $extraHeaders = Get-ExtraHeadersHashtable -JsonText $ExtraHeadersJson
+
+    if ($baseHeaders.Count -eq 0 -and $extraHeaders.Count -eq 0) {
+        throw 'No usable auth material was found. Provide AccessToken, CookieHeader, RootAuthToken, ExtraHeadersJson, or set UseGraphAuth.'
+    }
+
+    return Merge-Headers -Primary $baseHeaders -Secondary $extraHeaders
 }
 
 function Invoke-NeptuneRequest {

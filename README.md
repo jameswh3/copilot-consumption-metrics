@@ -7,7 +7,7 @@ https://admin.cloud.microsoft/admin/api/neptunelicensing/creditrequests
 ## Files
 
 - `Get-NeptuneCreditRequestsAll.ps1`: Data retrieval script that pages by `continuationToken` until exhausted
-- `Import-NeptuneAuthFromHar.ps1`: Imports cookie/bearer auth from a browser HAR into `.env`
+- `Import-NeptuneAuthFromHar.ps1`: Imports auth and replay-safe request headers from a browser HAR (memory-first, optional persistence)
 - `Get-AdminApiAccessToken.ps1`: Optional token acquisition helper for candidate resources
 - `Shared/Import-DotEnv.ps1`: Loads `.env` values into process env vars
 - `.env.example`: Starter template for local configuration
@@ -28,10 +28,19 @@ Copy-Item .\.env.example .\.env
 .\Import-NeptuneAuthFromHar.ps1 -HarPath "C:\path\to\capture.har"
 ```
 
+By default, this stores sensitive auth only in current process memory.
+To explicitly persist extracted values to `.env`, add `-PersistToDotEnv`.
+
 4. Pull full result sets with continuation-token paging:
 
 ```powershell
 .\Get-NeptuneCreditRequestsAll.ps1 -MaxPages 200
+```
+
+You can also load auth/header material directly from HAR in-memory for a single run:
+
+```powershell
+.\Get-NeptuneCreditRequestsAll.ps1 -HarPath "C:\path\to\capture.har" -MaxPages 200
 ```
 
 ## Graph Auth Mode (No HAR)
@@ -61,6 +70,7 @@ For tenants with many records, use the retrieval script:
 Behavior:
 
 - Uses auth resolution order: `AccessToken`, Graph auth mode, cookie header, root auth token
+- Replays optional HAR-derived request headers from `NEPTUNE_EXTRA_HEADERS_JSON` without overriding explicit auth headers
 - Requests `top=<PageSize>`
 - Follows `continuationToken` until it is empty or `MaxPages` is reached
 - Stops if a continuation token repeats (loop protection)
@@ -89,6 +99,7 @@ Main script (`Get-NeptuneCreditRequestsAll.ps1`):
 - `NEPTUNE_ACCESS_TOKEN`
 - `NEPTUNE_ROOT_AUTH_TOKEN`
 - `NEPTUNE_COOKIE_HEADER`
+- `NEPTUNE_EXTRA_HEADERS_JSON`
 - `NEPTUNE_CREDITREQUESTS_BASE_URI`
 - `NEPTUNE_CREDITREQUESTS_SERVICE`
 - `NEPTUNE_CREDITREQUESTS_STATES`
@@ -103,3 +114,4 @@ Main script (`Get-NeptuneCreditRequestsAll.ps1`):
 
 - For this endpoint, browser-session auth (cookie/HAR import) is often more reliable than generic Graph-style interactive token acquisition.
 - HAR/cookie/token artifacts are sensitive. Keep `.env` local and rotate session material after troubleshooting.
+- Default HAR import behavior avoids writing sensitive cookie/auth values to `.env`; use `-PersistToDotEnv` only when you explicitly want persistence.
