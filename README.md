@@ -70,7 +70,6 @@ Request defaults (service, states, include count, page size, base URI) are set w
 
 ## Notes
 
-- The script does not attempt Azure CLI or MSAL token acquisition.
 - Preferred auth is cookie header captured from a successful authenticated admin portal creditrequests request.
 - The script currently reads auth values from `.env` (`NEPTUNE_COOKIE_HEADER`).
 - Use script parameters (`-BaseUri`, `-Service`, `-States`, `-IncludeCount`, `-PageSize`) to override request options.
