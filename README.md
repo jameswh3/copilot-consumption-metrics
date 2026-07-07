@@ -6,7 +6,7 @@ https://admin.cloud.microsoft/admin/api/neptunelicensing/creditrequests
 
 ## Files
 
-- `Get-NeptuneCreditRequestsBearer.ps1`: Single entrypoint that uses authenticated request headers and pages through results
+- `Get-CopilotCoworkAccessRequests.ps1`: Single entrypoint that uses authenticated request headers and pages through results
 - `Shared/Import-DotEnv.ps1`: Loads `.env` values into process env vars
 - `.env.example`: Starter template for local configuration
 
@@ -35,13 +35,13 @@ Copy-Item .\.env.example .\.env
 6. Run the script:
 
 ```powershell
-.\Get-NeptuneCreditRequestsBearer.ps1
+.\Get-CopilotCoworkAccessRequests.ps1
 ```
 
 If you want to pass cookie auth directly:
 
 ```powershell
-.\Get-NeptuneCreditRequestsBearer.ps1 -CookieHeader "<cookie header value>"
+.\Get-CopilotCoworkAccessRequests.ps1 -CookieHeader "<cookie header value>"
 ```
 
 ## Behavior
@@ -70,6 +70,8 @@ If you want to pass cookie auth directly:
 
 - `NEPTUNE_COOKIE_HEADER`
 - `NEPTUNE_ACCESS_TOKEN`
+
+Request defaults (service, states, include count, page size, base URI) are set with script parameters, not `.env` keys.
 
 ## Notes
 
