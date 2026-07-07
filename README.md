@@ -66,11 +66,7 @@ If you want to pass cookie auth directly:
 
 - `NEPTUNE_COOKIE_HEADER`
 
-Request defaults (service, states, include count, page size, base URI) are set with script parameters, not `.env` keys.
+`NEPTUNE_COOKIE_HEADER` is one key whose value is the full browser `Cookie` header string (many cookie name/value pairs in a single value).
 
-## Notes
+Request defaults (service, states, include count, page size, base URI) are set with script parameters, not separate `.env` keys.
 
-- Preferred auth is cookie header captured from a successful authenticated admin portal creditrequests request.
-- The script currently reads auth values from `.env` (`NEPTUNE_COOKIE_HEADER`).
-- Use script parameters (`-BaseUri`, `-Service`, `-States`, `-IncludeCount`, `-PageSize`) to override request options.
-- `.env` is local only and should not be committed.
