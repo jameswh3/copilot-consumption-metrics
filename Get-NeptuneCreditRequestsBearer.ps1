@@ -10,8 +10,6 @@ param(
 
     [int]$PageSize = 50,
 
-    [int]$MaxPages = 200,
-
     [string]$AccessToken,
 
     [string]$CookieHeader,
@@ -92,6 +90,29 @@ function Resolve-CookieHeader {
     return $CookieHeader
 }
 
+function Get-CookieValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CookieHeaderValue,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    foreach ($pair in ($CookieHeaderValue -split ';')) {
+        $parts = $pair.Split('=', 2)
+        if ($parts.Length -ne 2) {
+            continue
+        }
+
+        if ($parts[0].Trim() -ieq $Name) {
+            return $parts[1].Trim()
+        }
+    }
+
+    return $null
+}
+
 function New-NeptuneUri {
     param(
         [Parameter(Mandatory = $true)]
@@ -168,6 +189,37 @@ function Get-HttpErrorDetails {
     }
 }
 
+function Get-NonJsonResponseDiagnostics {
+    param(
+        [string]$ResponseBody
+    )
+
+    $loginUrl = ''
+    $aadsts = ''
+
+    if (-not [string]::IsNullOrWhiteSpace($ResponseBody)) {
+        $loginUrlMatch = [regex]::Match($ResponseBody, "var\s+loginURL\s*=\s*'(?<u>[^']+)';", [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if ($loginUrlMatch.Success) {
+            $loginUrl = $loginUrlMatch.Groups['u'].Value
+            try {
+                $loginUrl = [System.Net.WebUtility]::HtmlDecode($loginUrl)
+            }
+            catch {
+            }
+        }
+
+        $aadstsMatch = [regex]::Match($ResponseBody, '(AADSTS\d{5,})', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if ($aadstsMatch.Success) {
+            $aadsts = $aadstsMatch.Groups[1].Value
+        }
+    }
+
+    return [pscustomobject]@{
+        LoginUrl = $loginUrl
+        AADSTS   = $aadsts
+    }
+}
+
 function Invoke-NeptuneRequest {
     param(
         [Parameter(Mandatory = $true)]
@@ -181,18 +233,12 @@ function Invoke-NeptuneRequest {
         $response = Invoke-WebRequest -Uri $Uri -Headers $Headers -Method Get -MaximumRedirection 0
     }
     catch {
-        $details = Get-HttpErrorDetails -ErrorRecord $_
-        $bodyPreview = if ([string]::IsNullOrWhiteSpace($details.Body)) { '' } else { $details.Body.Substring(0, [Math]::Min(800, $details.Body.Length)) }
-        if ($details.StatusCode) {
-            throw "Neptune request failed with HTTP $($details.StatusCode). Uri: $Uri. Body: $bodyPreview"
-        }
-
-        throw
+        throw 'Auth failed.'
     }
 
     $contentType = $response.Headers['Content-Type']
     if ($contentType -notmatch 'json') {
-        throw "Expected JSON response but got '$contentType'."
+        throw 'Auth failed.'
     }
 
     return ConvertFrom-JsonCompat -JsonText $response.Content -Depth 30
@@ -200,10 +246,6 @@ function Invoke-NeptuneRequest {
 
 if ($PageSize -le 0) {
     throw 'PageSize must be greater than 0.'
-}
-
-if ($MaxPages -le 0) {
-    throw 'MaxPages must be greater than 0.'
 }
 
 $requestHeaders = @{}
@@ -217,7 +259,19 @@ if (-not [string]::IsNullOrWhiteSpace($bearerToken)) {
 }
 elseif (-not [string]::IsNullOrWhiteSpace($cookieHeaderValue)) {
     $requestHeaders.Cookie = $cookieHeaderValue
-    Write-Host 'Using cookie header auth.'
+    $resolvedAjaxSessionKey = $null
+    $cookieAjaxSessionKey = Get-CookieValue -CookieHeaderValue $cookieHeaderValue -Name 's.AjaxSessionKey'
+    if (-not [string]::IsNullOrWhiteSpace($cookieAjaxSessionKey)) {
+        $resolvedAjaxSessionKey = [Uri]::UnescapeDataString($cookieAjaxSessionKey)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($resolvedAjaxSessionKey)) {
+        $requestHeaders.ajaxsessionkey = $resolvedAjaxSessionKey
+        Write-Host 'Using cookie header auth with ajaxsessionkey.'
+    }
+    else {
+        Write-Host 'Using cookie header auth.'
+    }
 }
 else {
     throw 'No auth was provided. Set NEPTUNE_ACCESS_TOKEN or NEPTUNE_COOKIE_HEADER in .env, or pass -AccessToken / -CookieHeader directly.'
@@ -229,7 +283,7 @@ $continuationToken = $null
 $seenContinuationTokens = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
 $seenRequestIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
-while ($page -lt $MaxPages) {
+while ($true) {
     $page += 1
 
     $queryParams = @{
