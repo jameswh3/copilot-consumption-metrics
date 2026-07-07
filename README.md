@@ -30,8 +30,6 @@ Copy-Item .\.env.example .\.env
 
 5. Copy the full `Cookie` header value from that request into `.env` as `NEPTUNE_COOKIE_HEADER`.
 
-   Optional: set `NEPTUNE_ACCESS_TOKEN` if you want to test bearer mode.
-
 6. Run the script:
 
 ```powershell
@@ -48,7 +46,6 @@ If you want to pass cookie auth directly:
 
 - Sends `Cookie: ...` when `-CookieHeader`/`NEPTUNE_COOKIE_HEADER` is supplied
 - Adds `ajaxsessionkey` automatically from cookie key `s.AjaxSessionKey` when present
-- Can also send `Authorization: Bearer ...` when `-AccessToken` is supplied directly
 - Requests `top=<PageSize>`
 - Follows `continuationToken` until empty
 - Stops if a continuation token repeats
@@ -58,7 +55,6 @@ If you want to pass cookie auth directly:
 ## Parameters
 
 - `-BaseUri` default: `https://admin.cloud.microsoft/admin/api/neptunelicensing/creditrequests`
-- `-AccessToken`
 - `-CookieHeader`
 - `-Service` default: `Cowork`
 - `-States` default: `Pending`
@@ -69,7 +65,6 @@ If you want to pass cookie auth directly:
 ## .env Keys
 
 - `NEPTUNE_COOKIE_HEADER`
-- `NEPTUNE_ACCESS_TOKEN`
 
 Request defaults (service, states, include count, page size, base URI) are set with script parameters, not `.env` keys.
 
@@ -77,6 +72,6 @@ Request defaults (service, states, include count, page size, base URI) are set w
 
 - The script does not attempt Azure CLI or MSAL token acquisition.
 - Preferred auth is cookie header captured from a successful authenticated admin portal creditrequests request.
-- The script currently reads auth values from `.env` (`NEPTUNE_COOKIE_HEADER`, `NEPTUNE_ACCESS_TOKEN`).
+- The script currently reads auth values from `.env` (`NEPTUNE_COOKIE_HEADER`).
 - Use script parameters (`-BaseUri`, `-Service`, `-States`, `-IncludeCount`, `-PageSize`) to override request options.
 - `.env` is local only and should not be committed.

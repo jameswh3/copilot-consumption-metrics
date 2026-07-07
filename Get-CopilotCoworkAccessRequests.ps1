@@ -10,8 +10,6 @@ param(
 
     [int]$PageSize = 50,
 
-    [string]$AccessToken,
-
     [string]$CookieHeader,
 
     [string]$OutputPath
@@ -27,10 +25,6 @@ $dotEnvPath = Join-Path $repoRoot '.env'
 if ((Test-Path -Path $importDotEnvPath) -and (Test-Path -Path $dotEnvPath)) {
     . $importDotEnvPath
     Import-DotEnv -Path $dotEnvPath
-}
-
-if (-not $PSBoundParameters.ContainsKey('AccessToken') -and -not [string]::IsNullOrWhiteSpace($env:NEPTUNE_ACCESS_TOKEN)) {
-    $script:AccessToken = $env:NEPTUNE_ACCESS_TOKEN
 }
 
 if (-not $PSBoundParameters.ContainsKey('CookieHeader') -and -not [string]::IsNullOrWhiteSpace($env:NEPTUNE_COOKIE_HEADER)) {
@@ -51,35 +45,6 @@ function ConvertFrom-JsonCompat {
     }
 
     return $JsonText | ConvertFrom-Json
-}
-
-function ConvertFrom-JwtPayload {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Token
-    )
-
-    $parts = $Token.Split('.')
-    if ($parts.Length -lt 2) {
-        throw 'The supplied access token is not a JWT.'
-    }
-
-    $payload = $parts[1].Replace('-', '+').Replace('_', '/')
-    switch ($payload.Length % 4) {
-        2 { $payload += '==' }
-        3 { $payload += '=' }
-    }
-
-    $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload))
-    return ConvertFrom-JsonCompat -JsonText $json -Depth 20
-}
-
-function Resolve-AccessToken {
-    if ([string]::IsNullOrWhiteSpace($AccessToken)) {
-        return $null
-    }
-
-    return $AccessToken
 }
 
 function Resolve-CookieHeader {
@@ -249,15 +214,9 @@ if ($PageSize -le 0) {
 }
 
 $requestHeaders = @{}
-$bearerToken = Resolve-AccessToken
 $cookieHeaderValue = Resolve-CookieHeader
 
-if (-not [string]::IsNullOrWhiteSpace($bearerToken)) {
-    $requestHeaders.Authorization = "Bearer $bearerToken"
-    $claims = ConvertFrom-JwtPayload -Token $bearerToken
-    Write-Host ("Using bearer token | aud={0} | tid={1}" -f $claims.aud, $claims.tid)
-}
-elseif (-not [string]::IsNullOrWhiteSpace($cookieHeaderValue)) {
+if (-not [string]::IsNullOrWhiteSpace($cookieHeaderValue)) {
     $requestHeaders.Cookie = $cookieHeaderValue
     $resolvedAjaxSessionKey = $null
     $cookieAjaxSessionKey = Get-CookieValue -CookieHeaderValue $cookieHeaderValue -Name 's.AjaxSessionKey'
@@ -274,7 +233,7 @@ elseif (-not [string]::IsNullOrWhiteSpace($cookieHeaderValue)) {
     }
 }
 else {
-    throw 'No auth was provided. Set NEPTUNE_ACCESS_TOKEN or NEPTUNE_COOKIE_HEADER in .env, or pass -AccessToken / -CookieHeader directly.'
+    throw 'No auth was provided. Set NEPTUNE_COOKIE_HEADER in .env, or pass -CookieHeader directly.'
 }
 
 $allItems = [System.Collections.Generic.List[object]]::new()
